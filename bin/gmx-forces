@@ -1,0 +1,57 @@
+#!/usr/bin/env python
+import os
+import sys
+import subprocess
+import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.abspath(os.path.dirname(__file__)), '..', 'lib'))
+from xvg import XVGReader
+from tempdir import temporary_directory
+
+
+def main():
+    if len(sys.argv) != 4:
+        print >> sys.stderr, 'usage: %s gro_fn top_fn forces_fn' % sys.argv[0]
+        exit(1)
+    _, gro_fn, top_fn, forces_fn = sys.argv
+    gro_fn = os.path.abspath(gro_fn)
+    top_fn = os.path.abspath(top_fn)
+
+    with temporary_directory():
+        mdp = build_mdp()
+        with open('grompp.mdp', 'w') as f:
+            f.write(mdp)
+
+        subprocess.check_output('grompp -f grompp.mdp -c %s -p %s' % (gro_fn, top_fn), shell=True)
+        subprocess.check_output('mdrun -s topol.tpr', shell=True)
+        subprocess.check_output('echo 0 | g_traj -of', shell=True)
+    
+        forces = XVGReader('force.xvg').data(0).reshape(-1, 3)
+    
+    np.savetxt(forces_fn, forces)
+
+
+def build_mdp():
+    mdp ='''
+        cpp   = /lib/cpp  ; Preprocessor
+        define          = -DFLEXIBLE
+
+        ; Parameters describing what to do, when to stop and what to save
+        integrator  = steep   ; Algorithm (steep = steepest descent minimization)
+        emtol      = 1.0      ; Stop minimization when the maximum force < 1.0 kJ/mol
+        nsteps     = 0        ; Maximum number of (minimization) steps to perform
+        nstfout    = 1        ; Write forces to disk every nstfout steps
+        energygrps  = System  ; Which energy group(s) to write to disk
+
+        coulombtype = pme    ; Treatment of long range electrostatic interactions
+        rcoulomb    = 2.0    ; long range electrostatic cut-off
+        rvdw        = 2.0    ; long range Van der Waals cut-off
+        rlist       = 2.0
+        constraints = none   ; Bond types to replace by constraints
+        pbc         = xyz    ; Periodic Boundary Conditions (yes/no)
+    '''
+    return mdp
+
+
+if __name__ == '__main__':
+    main()

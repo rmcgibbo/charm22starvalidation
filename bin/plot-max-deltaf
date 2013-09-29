@@ -1,0 +1,49 @@
+#!/usr/bin/env python
+
+import sys
+import numpy as np
+import matplotlib; matplotlib.use('Agg')
+import matplotlib.pyplot as pp
+import scipy.stats
+
+if len(sys.argv) != 4:
+   print 'usage %s force1.dat force2.dat plot_fn' % sys.argv[0]
+   exit(1)
+
+_, force1_fn, force2_fn, plot_fn = sys.argv
+
+force1 = np.loadtxt(force1_fn)
+force2 = np.loadtxt(force2_fn)
+
+norm1 = np.sqrt(np.sum(np.square(force1), axis=1))
+norm2 = np.sqrt(np.sum(np.square(force2), axis=1))
+
+error = np.abs(norm1 - norm2)
+pp.hist(error, bins=np.logspace(np.log10(np.min(error)),
+	                        np.log10(np.max(error)), 30))
+
+lines = []
+lines.append('Error Stats: %s vs %s' % (force1_fn, force2_fn))
+lines.append('-' * len(lines[0]))
+lines.append('Median force norm: %f' % np.median(norm1))
+lines.append('-' * len(lines[0]))
+lines.append('Min:             %f' % np.min(error))
+lines.append('5th percentile:  %f' % scipy.stats.scoreatpercentile(error, 5))
+lines.append('Median:          %f' % np.median(error))
+lines.append('Mean:            %f' % np.mean(error))
+lines.append('95th percentile: %f' % scipy.stats.scoreatpercentile(error, 95))
+lines.append('Max:             %f' % np.max(error))
+lines.append('')
+lines.append('argmax:          %d' % np.argmax(error))
+lines.append('1: %8.5f  %8.5f  %8.5f' % tuple(force1[np.argmax(error)]))
+lines.append('2: %8.5f  %8.5f  %8.5f' % tuple(force2[np.argmax(error)]))
+lines.append('-' * len(lines[0]))
+
+print '\n'.join(lines)
+
+
+pp.xscale('log')
+pp.title('Force Norm Error')
+pp.xlabel('%s - %s error (kJ/mol/nm)' % (force1_fn, force2_fn))
+pp.ylabel('Freq')
+pp.savefig(plot_fn)
