@@ -16,7 +16,7 @@ class DesmondDMSFile(object):
         self._open = False
         self.c = sqlite3.connect(file)
         self._open = True
-        
+
         tables = {}
         for table in self.c.execute("SELECT name FROM sqlite_master WHERE type='table'"):
             names = []
@@ -78,7 +78,7 @@ class DesmondDMSFile(object):
                                 theta0*degrees, 2*fc*kilocalorie_per_mole/radians**2)
             else:
                 raise NotImplementedError('Angle restraints not implemeneted yet')
-    
+
     def _addPeriodicTorsionsToSystem(self, sys):
         # Create the torsion terms
         periodic = mm.PeriodicTorsionForce()
@@ -135,7 +135,7 @@ class DesmondDMSFile(object):
             index = cmap.addMap(size, map)
             cmap_indices[name] = index
 
-            
+
         for term in self._iterRows('torsiontorsion_cmap_term'):
             cmapid = self.c.execute('''SELECT cmapid FROM torsiontorsion_cmap_param
                                        WHERE id=%s''' %  term['param']).fetchone()[0]
@@ -157,22 +157,16 @@ class DesmondDMSFile(object):
             nb.addParticle(term['charge'], sigma*angstroms, epsilon*kilocalories_per_mole)
 
 
-        pair_12_6_es = mm.CustomBondForce('a_ij/r^12 + b_ij/r^6 + q_ij/r')
-        pair_12_6_es.addPerBondParameter('a_ij')
-        pair_12_6_es.addPerBondParameter('b_ij')
-        pair_12_6_es.addPerBondParameter('q_ij')
-        sys.addForce(pair_12_6_es)
-
         # Bond graph (for debugging)
         g = nx.from_edgelist(self.c.execute('SELECT p0, p1 from stretch_harm_term').fetchall())
         pair_12_6_es_terms = set()
         nbnames = {1: '1-2', 2:'1-3', 3:'1-4'}
-        
+
         for term in self._iterRows('pair_12_6_es_term'):
             l = nx.algorithms.shortest_path_length(g, term['p0'], term['p1'])
             pair_12_6_es_terms.add((term['p0'], term['p1']))
             print 'Scaling interaction for a %d-%d (%s) interaction' % (term['p0'], term['p1'], nbnames[l])
- 
+
             a_ij, b_ij, q_ij, memo = self.c.execute('''
                 SELECT aij, bij, qij, type
                 FROM pair_12_6_es_param
@@ -180,23 +174,30 @@ class DesmondDMSFile(object):
             a_ij = (a_ij*kilocalorie_per_mole*(angstroms**12)).in_units_of(kilojoule_per_mole*(nanometer**12))
             b_ij = (b_ij*kilocalorie_per_mole*(angstroms**6)).in_units_of(kilojoule_per_mole*(nanometer**6))
             q_ij = q_ij*elementary_charge**2
-            
+
             #atom0params = nb.getParticleParameters(term['p0'])
             #atom1params = nb.getParticleParameters(term['p1'])
             #sigma_ij_orig = 0.5*(atom0params[1] + atom1params[1])
             #epsilon_ij_orig = (atom0params[2] * atom1params[2]).sqrt()
             #q_ij_orig = atom0params[0] * atom1params[0]
-            
+
             new_epsilon =  b_ij**2/(4*a_ij)
             new_sigma = (a_ij / b_ij)**(1.0/6.0)
 
             nb.addException(term['p0'], term['p1'], q_ij, new_sigma, new_epsilon)
 
-                
+            if self.c.execute('SELECT COUNT(*) FROM exclusion WHERE p0=%d AND p1=%d' % (term['p0'], term['p1'])).fetchone()[0] != 1:
+                raise ValueError('I can only support pair_12_6_es_terms that correspond to an exclusion')
+
+
+
         for term in self._iterRows('exclusion'):
             if (term['p0'], term['p1']) in pair_12_6_es_terms:
                 # Desmond puts scaled 1-4 interactions in the pair_12_6_es
-                # table, and then adds a corresponding exception here
+                # table, and then adds a corresponding exception here. We are
+                # using the exception part of NonbondedForce, so we're just
+                # adding the 1-4 interaction as an exception when its
+                # registered, and then NOT registering it as an exception here.
                 continue
 
             print 'Creating exception for a %d-%d (%s) interaction' % (term['p0'], term['p1'], nbnames[l])
@@ -229,8 +230,8 @@ if __name__ == '__main__':
     import os
     import numpy as np
 
-    #os.system('viparr ala2.pdb ala2.dms -f amber99SB-ILDN --without-constraints')
-    os.system('viparr ala2.pdb ala2.dms -f amber96 --without-constraints')
+    os.system('viparr ala2.pdb ala2.dms -f amber99SB-ILDN --without-constraints')
+    #os.system('viparr ala2.pdb ala2.dms -f amber96 --without-constraints')
     dms = DesmondDMSFile('ala2.dms')
     system1 = dms.createSystem()
     context1 = mm.Context(system1, mm.VerletIntegrator(0))
@@ -242,8 +243,8 @@ if __name__ == '__main__':
     print 'DMS Energy', state1.getPotentialEnergy()
 
     pdb = app.PDBFile('ala2.pdb')
-    #forcefield = app.ForceField('amber99sbildn.xml')
-    forcefield = app.ForceField('amber96.xml')
+    forcefield = app.ForceField('amber99sbildn.xml')
+    #forcefield = app.ForceField('amber96.xml')
     system_99 = forcefield.createSystem(pdb.topology, nonbondedMethod=app.NoCutoff)
     system2 = mm.System()
     for i in range(system_99.getNumParticles()):
