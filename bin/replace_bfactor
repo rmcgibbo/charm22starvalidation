@@ -1,0 +1,35 @@
+#!/usr/bin/env python
+
+import sys
+import numpy as np
+
+
+def replace_b_factor(pdb, b_factors):
+    out = []
+    b_factors = iter(b_factors)
+
+    for line in pdb:
+        if line[0:6] == "ATOM  ":
+            out.append("%s%6.2F%s" % (line[:60],next(b_factors),
+                                      line[66:]))
+        else:
+            out.append(line)
+            
+    return ''.join(out)
+
+if __name__ == '__main__':
+    if len(sys.argv) != 4:
+        print >> sys.stderr, 'usage %s pdb_file force1.dat force2.dat' % sys.argv[1]
+        exit(1)
+
+    f1 = np.array([np.linalg.norm(e) for e in np.loadtxt(sys.argv[2])])
+    f2 = np.array([np.linalg.norm(e) for e in np.loadtxt(sys.argv[3])])
+
+    bf = np.abs(f1 - f2)
+    bf = bf * 99 / np.max(bf)
+
+    with open(sys.argv[1]) as f:
+        out = replace_b_factor(f, bf)
+    with open(sys.argv[1], 'w') as f:
+        f.write(out)
+

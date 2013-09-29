@@ -13,7 +13,6 @@ conf.gro topol.top: 1LYD.pdb
 	rm posre.itp
 
 # Force calculation
-
 mmforces.dat: conf.gro topol.top
 	bin/mm-forces conf.gro topol.top mmforces.dat
 
@@ -23,8 +22,22 @@ gmxforces.dat: conf.gro topol.top
 desforces.dat: conf.gro bin/desmond-forces
 	bin/desmond-forces conf.gro desforces.dat
 
-# Plots
 
+
+# PDB files with bfactors giving the force error
+mm-gmx.pdb: mmforces.dat gmxforces.dat
+	editconf -f conf.gro -o mm-gmx.pdb
+	bin/replace_bfactor mm-gmx.pdb mmforces.dat gmxforces.dat
+mm-des.pdb: mmforces.dat desforces.dat
+	editconf -f conf.gro -o mm-des.pdb
+	bin/replace_bfactor mm-des.pdb mmforces.dat desforces.dat
+des-gmx.pdb: desforces.dat gmxforces.dat
+	editconf -f conf.gro -o des-gmx.pdb
+	bin/replace_bfactor des-gmx.pdb desforces.dat gmxforces.dat
+
+
+
+# Plots
 mm-gmx.png: mmforces.dat gmxforces.dat
 	bin/plot-max-deltaf mmforces.dat gmxforces.dat mm-gmx.png
 
