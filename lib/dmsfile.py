@@ -1,3 +1,30 @@
+'''
+dmsfile.py: Load Desmond dms files
+
+Portions copyright (c) 2013 Stanford University and the Authors
+Authors: Robert McGibbon
+Contributors:
+
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS, CONTRIBUTORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
+'''
+
 import math
 
 from simtk import openmm as mm
@@ -35,7 +62,7 @@ class DesmondDMSFile(object):
 
         self._open = False
         self._tables = None
-        self.c = sqlite3.connect(file)
+        self._conn = sqlite3.connect(file)
         self._open = True
         self._readSchemas()
 
@@ -45,8 +72,7 @@ class DesmondDMSFile(object):
                              'viparr command line tool distributed with desmond')
 
         # Build the topology
-        self.topology = self._getTopology()
-        self.positions = self._getPositions()
+        self.topology, self.positions = self._createTopology()
         self._topologyAtoms = list(self.topology.atoms())
         self._atomBonds = [{} for x in range(len(self._topologyAtoms))]
 
@@ -60,12 +86,14 @@ class DesmondDMSFile(object):
         '''
         return self.topology
 
-    def _getTopology(self):
+    def _createTopology(self):
         '''Build the topology of the system
         '''
         top = Topology()
+        positions = []
+
         boxVectors = []
-        for _, x, y, z in self.c.execute('select * FROM global_cell'):
+        for x, y, z in self._conn.execute('SELECT x, y, z FROM global_cell'):
             boxVectors.append(mm.Vec3(x, y, z)*angstrom)
         unitCellDimensions = [boxVectors[0][0], boxVectors[1][1], boxVectors[2][2]]
         top.setUnitCellDimensions(unitCellDimensions)
@@ -74,9 +102,9 @@ class DesmondDMSFile(object):
         lastChain = None
         lastResId = None
         c = top.addChain()
-        query = '''SELECT id, name, anum, resname, resid, chain
-                   FROM particle ORDER BY chain, resid'''
-        for (atomId, atomName, atomNumber, resName, resId, chain) in self.c.execute(query):
+        q = '''SELECT id, name, anum, resname, resid, chain, x, y, z
+        FROM particle'''
+        for (atomId, atomName, atomNumber, resName, resId, chain, x, y, z) in self._conn.execute(q):
             if chain != lastChain:
                 lastChain = chain
                 c = top.addChain()
@@ -95,11 +123,12 @@ class DesmondDMSFile(object):
 
             elem = element.get_by_atomic_number(atomNumber)
             atoms[atomId] = top.addAtom(atomName, elem, r)
+            positions.append(mm.Vec3(x, y, z)*angstrom)
 
-        for p0, p1 in self.c.execute('SELECT p0, p1 from bond'):
+        for p0, p1 in self._conn.execute('SELECT p0, p1 FROM bond'):
             top.addBond(atoms[p0], atoms[p1])
 
-        return top
+        return top, positions
 
     def createSystem(self, nonbondedMethod=ff.NoCutoff, nonbondedCutoff=Quantity(value=1.0, unit=nanometer),
                      ewaldErrorTolerance=0.0005, removeCMMotion=True, hydrogenMass=None, verbose=False):
@@ -114,6 +143,7 @@ class DesmondDMSFile(object):
         - hydrogenMass (mass=None) The mass to use for hydrogen atoms bound to heavy atoms.  Any mass added to a hydrogen is
           subtracted from the heavy atom to keep their total mass the same.
         '''
+        self._checkForUnsupportedTerms()
         sys = mm.System()
 
         # Buld the box dimensions
@@ -125,8 +155,8 @@ class DesmondDMSFile(object):
             raise ValueError('Illegal nonbonded method for a non-periodic system')
 
         # Create all of the particles
-        for term in self._iterRows('particle'):
-            sys.addParticle(term['mass']*dalton)
+        for mass in self._conn.execute('SELECT mass from particle'):
+            sys.addParticle(mass[0]*dalton)
 
         # Add all of the forces
         bonds = self._addBondsToSystem(sys)
@@ -167,11 +197,12 @@ class DesmondDMSFile(object):
         '''
         bonds = mm.HarmonicBondForce()
         sys.addForce(bonds)
-        for term in self._iterRows('stretch_harm_term'):
-            r0, fc = self.c.execute('SELECT r0, fc FROM stretch_harm_param WHERE id=?', (term['param'],)).fetchone()
-            p0, p1 = term['p0'], term['p1']
 
-            if term['constrained']:
+        q = '''SELECT p0, p1, r0, fc, constrained
+        FROM stretch_harm_term INNER JOIN stretch_harm_param
+        ON stretch_harm_term.param=stretch_harm_param.id'''
+        for p0, p1, r0, fc, constrained in self._conn.execute(q):
+            if constrained:
                 sys.addConstraint(p0, p1, r0*angstrom)
             else:
                 # Desmond writes the harmonic bond force without 1/2
@@ -191,14 +222,11 @@ class DesmondDMSFile(object):
         sys.addForce(angles)
         degToRad = math.pi/180
 
-        for term in self._iterRows('angle_harm_term'):
-            theta0, fc = self.c.execute('''
-                SELECT theta0, fc
-                FROM angle_harm_param
-                WHERE id=?''', (term['param'], )).fetchone()
-            p0, p1, p2 = term['p0'], term['p1'], term['p2']
-
-            if term['constrained']:
+        q = '''SELECT p0, p1, p2, theta0, fc, constrained
+        FROM angle_harm_term INNER JOIN angle_harm_param
+        ON angle_harm_term.param=angle_harm_param.id'''
+        for p0, p1, p2, theta0, fc, constrained in self._conn.execute(q):
+            if constrained:
                 l1 = self._atomBonds[p1][p0]
                 l2 = self._atomBonds[p1][p2]
                 length = (l1*l1 + l2*l2 - 2*l1*l2*math.cos(theta0*degToRad)).sqrt()
@@ -206,8 +234,7 @@ class DesmondDMSFile(object):
             else:
                 # Desmond writes the harmonic angle force without 1/2
                 # so we need to to double the force constant
-                angles.addAngle(term['p0'], term['p1'], term['p2'],
-                                theta0*degToRad, 2*fc*kilocalorie_per_mole/radian**2)
+                angles.addAngle(p0, p1, p2, theta0*degToRad, 2*fc*kilocalorie_per_mole/radian**2)
 
         return angles
 
@@ -216,18 +243,15 @@ class DesmondDMSFile(object):
         '''
         periodic = mm.PeriodicTorsionForce()
         sys.addForce(periodic)
-        for term in self._iterRows('dihedral_trig_term'):
-            phi0, fc0, fc1, fc2, fc3, fc4, fc5, fc6 = self.c.execute('''
-                SELECT phi0, fc0, fc1, fc2, fc3, fc4, fc5, fc6
-                FROM dihedral_trig_param
-                WHERE id=?''', (term['param'], )).fetchone()
 
+        q = '''SELECT p0, p1, p2, p3, phi0, fc0, fc1, fc2, fc3, fc4, fc5, fc6
+        FROM dihedral_trig_term INNER JOIN dihedral_trig_param
+        ON dihedral_trig_term.param=dihedral_trig_param.id'''
+        for p0, p1, p2, p3, phi0, fc0, fc1, fc2, fc3, fc4, fc5, fc6 in self._conn.execute(q):
             for order, fc in enumerate([fc0, fc1, fc2, fc3, fc4, fc5, fc6]):
                 if fc == 0:
                     continue
-
-                periodic.addTorsion(term['p0'], term['p1'], term['p2'], term['p3'],
-                                    order, phi0*degree, fc*kilocalorie_per_mole)
+                periodic.addTorsion(p0, p1, p2, p3, order, phi0*degree, fc*kilocalorie_per_mole)
 
 
     def _addImproperHarmonicTorsionsToSystem(self, sys):
@@ -240,12 +264,12 @@ class DesmondDMSFile(object):
         harmonicTorsion.addPerTorsionParameter('theta0')
         harmonicTorsion.addPerTorsionParameter('k')
         sys.addForce(harmonicTorsion)
-        for term in self._iterRows('improper_harm_term'):
-            phi0, fc = self.c.execute('''
-                SELECT phi0, fc FROM improper_harm_param
-                WHERE id=?''', (term['param'],)).fetchone()
-            harmonicTorsion.addTorsion(term['p0'], term['p1'], term['p2'],
-                                       term['p3'], [phi0*degree, fc*kilocalorie_per_mole])
+
+        q = '''SELECT p0, p1, p2, p3, phi0, fc
+        FROM improper_harm_term INNER JOIN improper_harm_param
+        ON improper_harm_term.param=improper_harm_param.id'''
+        for p0, p1, p2, p3, phi0, fc in self._conn.execute(q):
+            harmonicTorsion.addTorsion(p0, p1, p2, p3, [phi0*degree, fc*kilocalorie_per_mole])
 
     def _addCMAPToSystem(self, sys):
         '''Create the CMAP terms
@@ -259,26 +283,25 @@ class DesmondDMSFile(object):
         cmap_indices = {}
 
         for name in [k for k in self._tables.keys() if k.startswith('cmap')]:
-            size2 = self.c.execute('SELECT COUNT(*) FROM %s' % name).fetchone()[0]
+            size2 = self._conn.execute('SELECT COUNT(*) FROM %s' % name).fetchone()[0]
             fsize = math.sqrt(size2)
             if fsize != int(fsize):
                 raise ValueError('Non-square CMAPs are not supported')
             size = int(fsize)
 
             map = [0 for i in range(size2)]
-            for term in self._iterRows(name):
-                i = int((term['phi'] % 360) / (360.0 / size))
-                j = int((term['psi'] % 360) / (360.0 / size))
-                map[i+size*j] = term['energy']*kilocalorie_per_mole
-            index = cmap.addMap(size, map)
+            for phi, psi, energy in self._conn.execute("SELECT phi, psi, energy FROM %s" % name):
+                i = int((phi % 360) / (360.0 / size))
+                j = int((psi % 360) / (360.0 / size))
+                map[i+size*j] = energy
+            index = cmap.addMap(size, map*kilocalorie_per_mole)
             cmap_indices[name] = index
 
-        for term in self._iterRows('torsiontorsion_cmap_term'):
-            cmapid = self.c.execute('''SELECT cmapid FROM torsiontorsion_cmap_param
-                                       WHERE id=?''', (term['param'],)).fetchone()[0]
-            cmap.addTorsion(cmap_indices[cmapid],
-                            term['p0'], term['p1'], term['p2'], term['p3'],
-                            term['p4'], term['p5'], term['p6'], term['p7'])
+        q = '''SELECT p0, p1, p2, p3, p4, p5, p6, p7, cmapid
+        FROM torsiontorsion_cmap_term INNER JOIN torsiontorsion_cmap_param
+        ON torsiontorsion_cmap_term.param=torsiontorsion_cmap_param.id'''
+        for p0, p1, p2, p3, p4, p5, p6, p7, cmapid in self._conn.execute(q):
+            cmap.addTorsion(cmap_indices[cmapid], p0, p1, p2, p3, p4, p5, p6, p7)
 
     def _addNonbondedForceToSystem(self, sys, verbose):
         '''Create the nonbonded force
@@ -287,29 +310,24 @@ class DesmondDMSFile(object):
         nb.setNonbondedMethod(mm.NonbondedForce.NoCutoff)
         sys.addForce(nb)
 
-        for term in self._iterRows('particle'):
-            sigma, epsilon =  self.c.execute('''
-                SELECT sigma, epsilon FROM nonbonded_param
-                WHERE id=?''', (term['nbtype'],)).fetchone()
-            nb.addParticle(term['charge'], sigma*angstrom, epsilon*kilocalorie_per_mole)
+        q = '''SELECT charge, sigma, epsilon
+        FROM particle INNER JOIN nonbonded_param
+        ON particle.nbtype=nonbonded_param.id'''
+        for charge, sigma, epsilon in self._conn.execute(q):
+            nb.addParticle(charge, sigma*angstrom, epsilon*kilocalorie_per_mole)
 
         if verbose:
             # Bond graph (for debugging)
-            g = nx.from_edgelist(self.c.execute('SELECT p0, p1 FROM stretch_harm_term').fetchall())
+            g = nx.from_edgelist(self._conn.execute('SELECT p0, p1 FROM stretch_harm_term').fetchall())
             nbnames = {1: '1-2', 2:'1-3', 3:'1-4'}
 
-        # Record the terms that are set by viparr in the pair_12_6_es column,
-        # so that we can do the exceptions correctly
-        pair_12_6_es_terms = set()
-        for term in self._iterRows('pair_12_6_es_term'):
-            p0, p1 = term['p0'], term['p1']
+        q = '''SELECT p0, p1, aij, bij, qij
+        FROM pair_12_6_es_term INNER JOIN pair_12_6_es_param
+        ON pair_12_6_es_term.param=pair_12_6_es_param.id;'''
+        for p0, p1, a_ij, b_ij, q_ij in self._conn.execute(q):
             if verbose:
                 l = nx.algorithms.shortest_path_length(g, p0, p1)
                 print 'Scaling interaction for a %d-%d (%s) interaction' % (p0, p1, nbnames[l])
-
-            a_ij, b_ij, q_ij = self.c.execute('''
-                SELECT aij, bij, qij FROM pair_12_6_es_param
-                WHERE id=?''', (term['param'],)).fetchone()
             a_ij = (a_ij*kilocalorie_per_mole*(angstrom**12)).in_units_of(kilojoule_per_mole*(nanometer**12))
             b_ij = (b_ij*kilocalorie_per_mole*(angstrom**6)).in_units_of(kilojoule_per_mole*(nanometer**6))
             q_ij = q_ij*elementary_charge**2
@@ -320,43 +338,31 @@ class DesmondDMSFile(object):
             else:
                 new_epsilon =  b_ij**2/(4*a_ij)
                 new_sigma = (a_ij / b_ij)**(1.0/6.0)
-
-            pair_12_6_es_terms.add((p0, p1))
             nb.addException(p0, p1, q_ij, new_sigma, new_epsilon)
 
-            if self.c.execute('SELECT COUNT(*) FROM exclusion WHERE p0=? AND p1=?', (p0, p1)).fetchone()[0] != 1:
-                raise ValueError('I can only support pair_12_6_es_terms that correspond to an exclusion')
+        n_total = self._conn.execute('''SELECT COUNT(*) FROM pair_12_6_es_term''').fetchone()
+        n_in_exclusions= self._conn.execute('''SELECT COUNT(*)
+        FROM exclusion INNER JOIN pair_12_6_es_term
+        ON exclusion.p0==pair_12_6_es_term.p0 AND exclusion.p1==pair_12_6_es_term.p1''').fetchone()
+        if not n_total == n_in_exclusions:
+            raise NotImplementedError('All pair_12_6_es_terms must have a corresponding exclusion')
 
-        for term in self._iterRows('exclusion'):
-            p0, p1 = term['p0'], term['p1']
-            if (p0, p1) in pair_12_6_es_terms:
-                # Desmond puts scaled 1-4 interactions in the pair_12_6_es
-                # table, and then adds a corresponding exception here. We are
-                # using the exception part of NonbondedForce, so we're just
-                # adding the 1-4 interaction as an exception when its
-                # registered, and then NOT registering it as an exception here.
-                continue
-
+        # Desmond puts scaled 1-4 interactions in the pair_12_6_es
+        # table, and then adds a corresponding exception here. We are
+        # using the exception part of NonbondedForce, so we're just
+        # adding the 1-4 interaction as an exception when its
+        # registered, and then NOT registering it as an exception here.
+        q = '''SELECT E.p0, E.p1
+        FROM exclusion E LEFT OUTER JOIN pair_12_6_es_term P ON
+        E.p0 = P.p0 and E.p1 = P.p1
+        WHERE P.p0 is NULL'''
+        # http://stackoverflow.com/questions/5464131/finding-pairs-that-do-not-exist-in-a-different-table
+        for p0, p1 in self._conn.execute(q):
             if verbose:
                 print 'Creating exception for a %d-%d (%s) interaction' % (p0, p1, nbnames[l])
             nb.addException(p0, p1, 0.0, 1.0, 0.0)
 
         return nb
-
-    def _getPositions(self):
-        '''Build the array of atom positions
-        '''
-        positions = []
-        for term in self._iterRows('particle'):
-            positions.append(mm.Vec3(term['x'], term['y'], term['z'])*angstrom)
-        return positions
-
-    def _iterRows(self, table_name):
-        '''Iterate through rows of one of the SQL tables, yielding dictionaries
-        mapping the name of all of the entries to the values.
-        '''
-        for row in self.c.execute('SELECT * FROM %s' % table_name):
-            yield dict(zip(self._tables[table_name], row))
 
     def _hasTable(self, table_name):
         '''Does our DMS file contain this table?
@@ -368,9 +374,9 @@ class DesmondDMSFile(object):
         the `_tables` instance attribute
         '''
         tables = {}
-        for table in self.c.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+        for table in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'"):
             names = []
-            for e in self.c.execute('PRAGMA table_info(%s)' % table):
+            for e in self._conn.execute('PRAGMA table_info(%s)' % table):
                 names.append(str(e[1]))
             tables[str(table[0])] = names
         self._tables = tables
@@ -387,13 +393,11 @@ class DesmondDMSFile(object):
             raise NotImplementedError('Flat bottom potential terms '
                                       'are not implemeneted')
 
-
-
     def close(self):
         '''Close the SQL connection
         '''
         if self._open:
-            self.c.close()
+            self._conn.close()
 
     def __del__(self):
         self.close()
