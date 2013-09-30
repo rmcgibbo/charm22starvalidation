@@ -1,15 +1,16 @@
-import sqlite3
-import networkx as nx
-
 import math
+
+from simtk import openmm as mm
+from simtk.openmm.app import forcefield as ff
+from simtk.openmm.app import element, Topology, PDBFile
 from simtk.unit import (Quantity, nanometer, angstrom, dalton,
                         kilocalorie_per_mole, kilojoule_per_mole,
                         radian, degree, elementary_charge)
-from simtk.openmm.app import element, Topology, PDBFile
 
-from simtk import openmm as mm
-from simtk.openmm import app
-from simtk.openmm.app import forcefield as ff
+try:
+    import networkx as nx
+except ImportError:
+    pass
 
 
 class DesmondDMSFile(object):
@@ -23,6 +24,13 @@ class DesmondDMSFile(object):
         Parameters:
         - file (string) the name of the file to load
         '''
+
+        # sqlite3 is included in the standard lib, but at python
+        # compile time, you can disable support (I think), so it's
+        # not *guarenteed* to be available. Doing the import here
+        # means we only raise an ImportError if people try to use
+        # this class, so the module can be safely imported
+        import sqlite3
 
         self._open = False
         self.c = sqlite3.connect(file)
@@ -97,7 +105,7 @@ class DesmondDMSFile(object):
         return top
 
     def createSystem(self, nonbondedMethod=ff.NoCutoff, nonbondedCutoff=Quantity(value=1.0, unit=nanometer),
-                     ewaldErrorTolerance=0.0005, removeCMMotion=True, hydrogenMass=None):
+                     ewaldErrorTolerance=0.0005, removeCMMotion=True, hydrogenMass=None, verbose=False):
         '''Construct an OpenMM System representing the topology described by this dms file
 
         Parameters:
@@ -129,7 +137,7 @@ class DesmondDMSFile(object):
         perioic = self._addPeriodicTorsionsToSystem(sys)
         improper = self._addImproperTorsionsToSystem(sys)
         cmap = self._addCMAPToSystem(sys)
-        nb = self._addNonbondedForceToSystem(sys)
+        nb = self._addNonbondedForceToSystem(sys, verbose)
 
         # Finish configuring the NonbondedForce.
         methodMap = {ff.NoCutoff:mm.NonbondedForce.NoCutoff,
@@ -163,7 +171,7 @@ class DesmondDMSFile(object):
         bonds = mm.HarmonicBondForce()
         sys.addForce(bonds)
         for term in self._iterRows('stretch_harm_term'):
-            r0, fc = self.c.execute('SELECT r0, fc FROM stretch_harm_param WHERE id=%s' % term['param']).fetchone()
+            r0, fc = self.c.execute('SELECT r0, fc FROM stretch_harm_param WHERE id=?', (term['param'],)).fetchone()
             p0, p1 = term['p0'], term['p1']
 
             if term['constrained']:
@@ -187,7 +195,10 @@ class DesmondDMSFile(object):
         degToRad = math.pi/180
 
         for term in self._iterRows('angle_harm_term'):
-            theta0, fc = self.c.execute('SELECT theta0, fc FROM angle_harm_param WHERE id=%s' % term['param']).fetchone()
+            theta0, fc = self.c.execute('''
+                SELECT theta0, fc
+                FROM angle_harm_param
+                WHERE id=?''', (term['param'], )).fetchone()
             p0, p1, p2 = term['p0'], term['p1'], term['p2']
 
             if term['constrained']:
@@ -212,7 +223,7 @@ class DesmondDMSFile(object):
             phi0, fc0, fc1, fc2, fc3, fc4, fc5, fc6 = self.c.execute('''
                 SELECT phi0, fc0, fc1, fc2, fc3, fc4, fc5, fc6
                 FROM dihedral_trig_param
-                WHERE id=%s''' % term['param']).fetchone()
+                WHERE id=?''', (term['param'], )).fetchone()
 
             for order, fc in enumerate([fc0, fc1, fc2, fc3, fc4, fc5, fc6]):
                 if fc == 0:
@@ -233,7 +244,9 @@ class DesmondDMSFile(object):
         harmonicTorsion.addPerTorsionParameter('k')
         sys.addForce(harmonicTorsion)
         for term in self._iterRows('improper_harm_term'):
-            phi0, fc = self.c.execute('SELECT phi0, fc FROM improper_harm_param WHERE id=%s' % term['param']).fetchone()
+            phi0, fc = self.c.execute('''
+                SELECT phi0, fc FROM improper_harm_param
+                WHERE id=?''', (term['param'],)).fetchone()
             harmonicTorsion.addTorsion(term['p0'], term['p1'], term['p2'],
                                        term['p3'], [phi0*degree, fc*kilocalorie_per_mole])
 
@@ -266,12 +279,12 @@ class DesmondDMSFile(object):
 
         for term in self._iterRows('torsiontorsion_cmap_term'):
             cmapid = self.c.execute('''SELECT cmapid FROM torsiontorsion_cmap_param
-                                       WHERE id=%s''' %  term['param']).fetchone()[0]
+                                       WHERE id=?''', (term['param'],)).fetchone()[0]
             cmap.addTorsion(cmap_indices[cmapid],
                             term['p0'], term['p1'], term['p2'], term['p3'],
                             term['p4'], term['p5'], term['p6'], term['p7'])
 
-    def _addNonbondedForceToSystem(self, sys):
+    def _addNonbondedForceToSystem(self, sys, verbose):
         '''Create the nonbonded force
         '''
         nb = mm.NonbondedForce()
@@ -280,46 +293,42 @@ class DesmondDMSFile(object):
 
         for term in self._iterRows('particle'):
             sigma, epsilon =  self.c.execute('''
-                SELECT sigma, epsilon
-                FROM nonbonded_param
-                WHERE id=%s''' % term['nbtype']).fetchone()
+                SELECT sigma, epsilon FROM nonbonded_param
+                WHERE id=?''', (term['nbtype'],)).fetchone()
             nb.addParticle(term['charge'], sigma*angstrom, epsilon*kilocalorie_per_mole)
 
+        if verbose:
+            # Bond graph (for debugging)
+            g = nx.from_edgelist(self.c.execute('SELECT p0, p1 FROM stretch_harm_term').fetchall())
+            nbnames = {1: '1-2', 2:'1-3', 3:'1-4'}
 
-        # Bond graph (for debugging)
-        g = nx.from_edgelist(self.c.execute('SELECT p0, p1 from stretch_harm_term').fetchall())
+        # Record the terms that are set by viparr in the pair_12_6_es column,
+        # so that we can do the exceptions correctly
         pair_12_6_es_terms = set()
-        nbnames = {1: '1-2', 2:'1-3', 3:'1-4'}
-
         for term in self._iterRows('pair_12_6_es_term'):
-            l = nx.algorithms.shortest_path_length(g, term['p0'], term['p1'])
-            pair_12_6_es_terms.add((term['p0'], term['p1']))
-            print 'Scaling interaction for a %d-%d (%s) interaction' % (term['p0'], term['p1'], nbnames[l])
+            p0, p1 = term['p0'], term['p1']
+            if verbose:
+                l = nx.algorithms.shortest_path_length(g, p0, p1)
+                print 'Scaling interaction for a %d-%d (%s) interaction' % (p0, p1, nbnames[l])
 
             a_ij, b_ij, q_ij = self.c.execute('''
-                SELECT aij, bij, qij
-                FROM pair_12_6_es_param
-                WHERE id=%s''' % term['param']).fetchone()
+                SELECT aij, bij, qij FROM pair_12_6_es_param
+                WHERE id=?''', (term['param'],)).fetchone()
             a_ij = (a_ij*kilocalorie_per_mole*(angstrom**12)).in_units_of(kilojoule_per_mole*(nanometer**12))
             b_ij = (b_ij*kilocalorie_per_mole*(angstrom**6)).in_units_of(kilojoule_per_mole*(nanometer**6))
             q_ij = q_ij*elementary_charge**2
-
-            #atom0params = nb.getParticleParameters(term['p0'])
-            #atom1params = nb.getParticleParameters(term['p1'])
-            #sigma_ij_orig = 0.5*(atom0params[1] + atom1params[1])
-            #epsilon_ij_orig = (atom0params[2] * atom1params[2]).sqrt()
-            #q_ij_orig = atom0params[0] * atom1params[0]
-
             new_epsilon =  b_ij**2/(4*a_ij)
             new_sigma = (a_ij / b_ij)**(1.0/6.0)
 
-            nb.addException(term['p0'], term['p1'], q_ij, new_sigma, new_epsilon)
+            pair_12_6_es_terms.add((p0, p1))
+            nb.addException(p0, p1, q_ij, new_sigma, new_epsilon)
 
-            if self.c.execute('SELECT COUNT(*) FROM exclusion WHERE p0=%d AND p1=%d' % (term['p0'], term['p1'])).fetchone()[0] != 1:
+            if self.c.execute('SELECT COUNT(*) FROM exclusion WHERE p0=? AND p1=?', (p0, p1)).fetchone()[0] != 1:
                 raise ValueError('I can only support pair_12_6_es_terms that correspond to an exclusion')
 
         for term in self._iterRows('exclusion'):
-            if (term['p0'], term['p1']) in pair_12_6_es_terms:
+            p0, p1 = term['p0'], term['p1']
+            if (p0, p1) in pair_12_6_es_terms:
                 # Desmond puts scaled 1-4 interactions in the pair_12_6_es
                 # table, and then adds a corresponding exception here. We are
                 # using the exception part of NonbondedForce, so we're just
@@ -327,8 +336,9 @@ class DesmondDMSFile(object):
                 # registered, and then NOT registering it as an exception here.
                 continue
 
-            print 'Creating exception for a %d-%d (%s) interaction' % (term['p0'], term['p1'], nbnames[l])
-            nb.addException(term['p0'], term['p1'], 0.0, 1.0, 0.0)
+            if verbose:
+                print 'Creating exception for a %d-%d (%s) interaction' % (p0, p1, nbnames[l])
+            nb.addException(p0, p1, 0.0, 1.0, 0.0)
 
         return nb
 

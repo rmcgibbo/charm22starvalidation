@@ -64,3 +64,15 @@ def test_charmm22star():
     force1 = state1.getForces(asNumpy=True)
 
     print force1
+
+@unittest.skipIf(not HAVE_VIPARR, 'Need viparr')
+def test_charmm22star_1lyd():
+    subprocess.check_output('viparr 1LYD.pdb 1LYD.dms -f charmm22star_aminoacids --without-constraints', shell=True)
+    dms = DesmondDMSFile('1LYD.dms')
+    system1 = dms.createSystem()
+    context1 = mm.Context(system1, mm.VerletIntegrator(0))
+    context1.setPositions(dms.positions)
+    state1 = context1.getState(getForces=True)
+    force1 = state1.getForces(asNumpy=True)
+
+    print force1
