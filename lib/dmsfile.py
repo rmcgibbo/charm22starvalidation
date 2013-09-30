@@ -307,7 +307,6 @@ class DesmondDMSFile(object):
         '''Create the nonbonded force
         '''
         nb = mm.NonbondedForce()
-        nb.setNonbondedMethod(mm.NonbondedForce.NoCutoff)
         sys.addForce(nb)
 
         q = '''SELECT charge, sigma, epsilon
@@ -359,6 +358,7 @@ class DesmondDMSFile(object):
         # http://stackoverflow.com/questions/5464131/finding-pairs-that-do-not-exist-in-a-different-table
         for p0, p1 in self._conn.execute(q):
             if verbose:
+                l = nx.algorithms.shortest_path_length(g, p0, p1)
                 print 'Creating exception for a %d-%d (%s) interaction' % (p0, p1, nbnames[l])
             nb.addException(p0, p1, 0.0, 1.0, 0.0)
 
