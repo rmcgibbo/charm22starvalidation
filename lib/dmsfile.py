@@ -29,7 +29,8 @@ import math
 
 from simtk import openmm as mm
 from simtk.openmm.app import forcefield as ff
-from simtk.openmm.app import element, Topology, PDBFile
+from simtk.openmm.app import Element, Topology, PDBFile
+from simtk.openmm.app.element import hydrogen
 from simtk.unit import (Quantity, nanometer, angstrom, dalton,
                         kilocalorie_per_mole, kilojoule_per_mole,
                         radian, degree, elementary_charge)
@@ -75,6 +76,7 @@ class DesmondDMSFile(object):
         self.topology, self.positions = self._createTopology()
         self._topologyAtoms = list(self.topology.atoms())
         self._atomBonds = [{} for x in range(len(self._topologyAtoms))]
+        self._angleConstraints = [{} for x in range(len(self._topologyAtoms))]
 
     def getPositions(self):
         '''Get the positions of each atom in the system
@@ -121,7 +123,7 @@ class DesmondDMSFile(object):
             if atomName in atomReplacements:
                 atomName = atomReplacements[atomName]
 
-            elem = element.get_by_atomic_number(atomNumber)
+            elem = Element.getByAtomicNumber(atomNumber)
             atoms[atomId] = top.addAtom(atomName, elem, r)
             positions.append(mm.Vec3(x, y, z)*angstrom)
 
@@ -159,11 +161,12 @@ class DesmondDMSFile(object):
             sys.addParticle(mass[0]*dalton)
 
         # Add all of the forces
-        bonds = self._addBondsToSystem(sys)
-        angles = self._addAnglesToSystem(sys)
-        perioic = self._addPeriodicTorsionsToSystem(sys)
-        improper = self._addImproperHarmonicTorsionsToSystem(sys)
-        cmap = self._addCMAPToSystem(sys)
+        self._addBondsToSystem(sys)
+        self._addAnglesToSystem(sys)
+        self._addConstraintsToSystem(sys)
+        self._addPeriodicTorsionsToSystem(sys)
+        self._addImproperHarmonicTorsionsToSystem(sys)
+        self._addCMAPToSystem(sys)
         nb = self._addNonbondedForceToSystem(sys, verbose)
 
         # Finish configuring the NonbondedForce.
@@ -179,9 +182,9 @@ class DesmondDMSFile(object):
         # Adjust masses.
         if hydrogenMass is not None:
             for atom1, atom2 in self.topology.bonds():
-                if atom1.element == element.hydrogen:
+                if atom1.element == hydrogen:
                     (atom1, atom2) = (atom2, atom1)
-                if atom2.element == element.hydrogen and atom1.element not in (element.hydrogen, None):
+                if atom2.element == hydrogen and atom1.element not in (hydrogen, None):
                     transferMass = hydrogenMass-sys.getParticleMass(atom2.index)
                     sys.setParticleMass(atom2.index, hydrogenMass)
                     sys.setParticleMass(atom1.index, sys.getParticleMass(atom1.index)-transferMass)
@@ -231,12 +234,43 @@ class DesmondDMSFile(object):
                 l2 = self._atomBonds[p1][p2]
                 length = (l1*l1 + l2*l2 - 2*l1*l2*math.cos(theta0*degToRad)).sqrt()
                 sys.addConstraint(p0, p2, length)
+                self._angleConstraints[p1][p0] = p2
+                self._angleConstraints[p1][p2] = p0
             else:
                 # Desmond writes the harmonic angle force without 1/2
                 # so we need to to double the force constant
                 angles.addAngle(p0, p1, p2, theta0*degToRad, 2*fc*kilocalorie_per_mole/radian**2)
 
         return angles
+
+    def _addConstraintsToSystem(self, sys):
+        '''Add constraints to system. Normally these should already be
+        added by the bonds table, but we want to make sure that there's
+        no extra information in the constraints table that we're not
+        including in the system'''
+        for term_table in [n for n in self._tables.keys() if n.startswith('constraint_a') and n.endswith('term')]:
+            param_table = term_table.replace('term', 'param')
+            q = '''SELECT p0, p1, r1
+            FROM %(term)s INNER JOIN %(param)s
+            ON %(term)s.param=%(param)s.id''' % \
+                {'term': term_table, 'param': param_table}
+            for p0, p1, r1 in self._conn.execute(q):
+                if not p1 in self._atomBonds[p0]:
+                    sys.addConstraint(p0, p1, r1*angstrom)
+                    self._atomBonds[p0][p1] = r1*angstrom
+                    self._atomBonds[p1][p0] = r1*angstrom
+
+        if 'constraint_hoh_term' in self._tables:
+            degToRad = math.pi/180
+            q = '''SELECT p0, p1, p2, r1, r2, theta
+            FROM constraint_hoh_term INNER JOIN constraint_hoh_param
+            ON constraint_hoh_term.param=constraint_hoh_param.id'''
+            for p0, p1, p2, r1, r2, theta in self._conn.execute(q):
+                # Here, p0 is the heavy atom and p1 and p2 are the H1 and H2
+                # wihth O-H1 and O-H2 distances r1 and r2
+                if not (self._angleConstraints[p0].get(p1, None) == p2):
+                    length = (r1*r1 + r2*r2 - 2*r1*r2*math.cos(theta*degToRad)).sqrt()
+                    sys.addConstraint(p1, p2, length)
 
     def _addPeriodicTorsionsToSystem(self, sys):
         '''Create the torsion terms
