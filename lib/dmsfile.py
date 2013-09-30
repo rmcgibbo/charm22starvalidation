@@ -10,6 +10,7 @@ from simtk.unit import (Quantity, nanometer, angstrom, dalton,
 try:
     import networkx as nx
 except ImportError:
+    # nx is only used when createSystem is called with verbose=True
     pass
 
 
@@ -33,19 +34,15 @@ class DesmondDMSFile(object):
         import sqlite3
 
         self._open = False
+        self._tables = None
         self.c = sqlite3.connect(file)
         self._open = True
+        self._readSchemas()
 
-        tables = {}
-        for table in self.c.execute("SELECT name FROM sqlite_master WHERE type='table'"):
-            names = []
-            for e in self.c.execute('PRAGMA table_info(%s)' % table):
-                names.append(str(e[1]))
-            tables[str(table[0])] = names
-        self._tables = tables
-
-        if 'nbtype' not in tables['particle']:
-            raise ValueError('No nonbonded parameters associated with this DMS file.')
+        if 'nbtype' not in self._tables['particle']:
+            raise ValueError('No nonbonded parameters associated with this '
+                             'DMS file. You can add a forcefield with the '
+                             'viparr command line tool distributed with desmond')
 
         # Build the topology
         self.topology = self._getTopology()
@@ -365,6 +362,32 @@ class DesmondDMSFile(object):
         '''Does our DMS file contain this table?
         '''
         return table_name in self._tables
+
+    def _readSchemas(self):
+        '''Read the schemas of each of the tables in the dms file, populating
+        the `_tables` instance attribute
+        '''
+        tables = {}
+        for table in self.c.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            names = []
+            for e in self.c.execute('PRAGMA table_info(%s)' % table):
+                names.append(str(e[1]))
+            tables[str(table[0])] = names
+        self._tables = tables
+
+    def _checkForUnsupportedTerms(self):
+        '''Check the file for forcefield terms that are not currenty supported,
+        raising a NotImplementedError
+        '''
+        if 'posre_harm_term' in self._tables:
+            raise NotImplementedError('Position restraints are not implemented.')
+        flat_bottom_potential_terms = ['stretch_fbhw_term', 'angle_fbhw_term',
+                                       'improper_fbhw_term', 'posre_fbhw_term']
+        if any((t in self._tables) for t in flat_bottom_potential_terms):
+            raise NotImplementedError('Flat bottom potential terms '
+                                      'are not implemeneted')
+
+
 
     def close(self):
         '''Close the SQL connection

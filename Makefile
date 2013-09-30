@@ -1,4 +1,4 @@
-all: mm-gmx.png mm-des.png des-gmx.png
+all: mm-gmx.png mm-des.png des-gmx.png mm2-des.pdb mm-gmx.pdb mm-des.pdb des-gmx.pdb
 
 clean:
 	rm -rf *.gro *.top \#topol.top* *.itp *.dms dessert_* eneseq forces.dtr trajectory.dtr *.png topology-match.pdb
@@ -36,7 +36,9 @@ des-gmx.pdb: conf.gro desforces.dat gmxforces.dat
 mm2-des.pdb: conf.gro mm2forces.dat desforces.dat
 	editconf -f conf.gro -o mm2-des.pdb
 	bin/replace_bfactor mm2-des.pdb mm2forces.dat desforces.dat
-
+mm2-mm.pdb: conf.gro mm2forces.dat mmforces.dat
+	editconf -f conf.gro -o mm2-mm.pdb
+	bin/replace_bfactor mm2-mm.pdb mm2forces.dat mmforces.dat
 
 # Plots
 mm-gmx.png: mmforces.dat gmxforces.dat
