@@ -22,6 +22,8 @@ gmxforces.dat: conf.gro topol.top
 desforces.dat: conf.gro bin/desmond-forces
 	bin/desmond-forces conf.gro desforces.dat
 
+mm2forces.dat: conf.gro
+	bin/mm2-forces conf.gro mm2forces.dat
 
 
 # PDB files with bfactors giving the force error
@@ -34,7 +36,9 @@ mm-des.pdb: mmforces.dat desforces.dat
 des-gmx.pdb: desforces.dat gmxforces.dat
 	editconf -f conf.gro -o des-gmx.pdb
 	bin/replace_bfactor des-gmx.pdb desforces.dat gmxforces.dat
-
+mm2-des.pdb:
+	editconf -f conf.gro -o mm2-des.pdb
+	bin/replace_bfactor mm2-des.pdb mm2forces.dat desforces.dat
 
 
 # Plots
