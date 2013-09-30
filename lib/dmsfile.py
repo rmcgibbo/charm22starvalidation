@@ -62,7 +62,7 @@ class DesmondDMSFile(object):
         '''Get the topology of the system
         '''
         return self.topology
-        
+
     def _getTopology(self):
         '''Build the topology of the system
         '''
@@ -135,7 +135,7 @@ class DesmondDMSFile(object):
         bonds = self._addBondsToSystem(sys)
         angles = self._addAnglesToSystem(sys)
         perioic = self._addPeriodicTorsionsToSystem(sys)
-        improper = self._addImproperTorsionsToSystem(sys)
+        improper = self._addImproperHarmonicTorsionsToSystem(sys)
         cmap = self._addCMAPToSystem(sys)
         nb = self._addNonbondedForceToSystem(sys, verbose)
 
@@ -233,13 +233,13 @@ class DesmondDMSFile(object):
                                     order, phi0*degree, fc*kilocalorie_per_mole)
 
 
-    def _addImproperTorsionsToSystem(self, sys):
+    def _addImproperHarmonicTorsionsToSystem(self, sys):
         '''Create the improper harmonic torsion terms
         '''
         if not self._hasTable('improper_harm_term'):
             return
 
-        harmonicTorsion = mm.CustomTorsionForce('0.5*k*(theta-theta0)^2')
+        harmonicTorsion = mm.CustomTorsionForce('k*(theta-theta0)^2')
         harmonicTorsion.addPerTorsionParameter('theta0')
         harmonicTorsion.addPerTorsionParameter('k')
         sys.addForce(harmonicTorsion)
@@ -270,12 +270,11 @@ class DesmondDMSFile(object):
 
             map = [0 for i in range(size2)]
             for term in self._iterRows(name):
-                i = int((size*term['phi']/360.0 + size/2) % size)
-                j = int((size*term['psi']/360.0 + size/2) % size)
+                i = int((term['phi'] % 360) / (360.0 / size))
+                j = int((term['psi'] % 360) / (360.0 / size))
                 map[i+size*j] = term['energy']*kilocalorie_per_mole
             index = cmap.addMap(size, map)
             cmap_indices[name] = index
-
 
         for term in self._iterRows('torsiontorsion_cmap_term'):
             cmapid = self.c.execute('''SELECT cmapid FROM torsiontorsion_cmap_param
@@ -317,8 +316,13 @@ class DesmondDMSFile(object):
             a_ij = (a_ij*kilocalorie_per_mole*(angstrom**12)).in_units_of(kilojoule_per_mole*(nanometer**12))
             b_ij = (b_ij*kilocalorie_per_mole*(angstrom**6)).in_units_of(kilojoule_per_mole*(nanometer**6))
             q_ij = q_ij*elementary_charge**2
-            new_epsilon =  b_ij**2/(4*a_ij)
-            new_sigma = (a_ij / b_ij)**(1.0/6.0)
+
+            if (b_ij._value == 0.0) or (a_ij._value == 0.0):
+                new_epsilon = 0
+                new_sigma = 1
+            else:
+                new_epsilon =  b_ij**2/(4*a_ij)
+                new_sigma = (a_ij / b_ij)**(1.0/6.0)
 
             pair_12_6_es_terms.add((p0, p1))
             nb.addException(p0, p1, q_ij, new_sigma, new_epsilon)
@@ -370,4 +374,3 @@ class DesmondDMSFile(object):
 
     def __del__(self):
         self.close()
-

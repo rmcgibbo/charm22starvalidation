@@ -15,28 +15,25 @@ conf.gro topol.top: 1LYD.pdb
 # Force calculation
 mmforces.dat: conf.gro topol.top
 	bin/mm-forces conf.gro topol.top mmforces.dat
-
 gmxforces.dat: conf.gro topol.top
 	bin/gmx-forces conf.gro topol.top gmxforces.dat
-
 desforces.dat: conf.gro bin/desmond-forces
 	bin/desmond-forces conf.gro desforces.dat
-
 mm2forces.dat: conf.gro
 	bin/mm2-forces conf.gro mm2forces.dat
 
 
 # PDB files with bfactors giving the force error
-mm-gmx.pdb: mmforces.dat gmxforces.dat
+mm-gmx.pdb: conf.gro mmforces.dat gmxforces.dat
 	editconf -f conf.gro -o mm-gmx.pdb
 	bin/replace_bfactor mm-gmx.pdb mmforces.dat gmxforces.dat
-mm-des.pdb: mmforces.dat desforces.dat
+mm-des.pdb: conf.gro mmforces.dat desforces.dat
 	editconf -f conf.gro -o mm-des.pdb
 	bin/replace_bfactor mm-des.pdb mmforces.dat desforces.dat
-des-gmx.pdb: desforces.dat gmxforces.dat
+des-gmx.pdb: conf.gro desforces.dat gmxforces.dat
 	editconf -f conf.gro -o des-gmx.pdb
 	bin/replace_bfactor des-gmx.pdb desforces.dat gmxforces.dat
-mm2-des.pdb:
+mm2-des.pdb: conf.gro mm2forces.dat desforces.dat
 	editconf -f conf.gro -o mm2-des.pdb
 	bin/replace_bfactor mm2-des.pdb mm2forces.dat desforces.dat
 
@@ -44,9 +41,9 @@ mm2-des.pdb:
 # Plots
 mm-gmx.png: mmforces.dat gmxforces.dat
 	bin/plot-max-deltaf mmforces.dat gmxforces.dat mm-gmx.png
-
 mm-des.png: mmforces.dat desforces.dat
 	bin/plot-max-deltaf mmforces.dat desforces.dat mm-des.png
-
 des-gmx.png: desforces.dat gmxforces.dat
 	bin/plot-max-deltaf desforces.dat gmxforces.dat des-gmx.png
+mm2-des.png: mm2forces.dat desforces.dat
+	bin/plot-max-deltaf desforces.dat mm2forces.dat mm2-des.png
