@@ -7,9 +7,8 @@ clean:
 # Everything starts from the gro file, which we take as
 # the "reference geometry" of the system
 
-conf.gro topol.top: 1LYD.pdb
-	pdb2gmx -f 1LYD.pdb -ff charmm22star -water none -ignh
-	editconf -f conf.gro -o conf.gro -box 10 10 10
+conf.gro topol.top: 1huf_MON.pdb #1LYD.pdb
+	echo "1\n1\n" | pdb2gmx -f $< -ff charmm22star -water tip3p -ter -ignh
 	rm posre.itp
 
 # Force calculation

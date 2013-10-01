@@ -37,7 +37,7 @@ def main():
     with temporary_directory():
         call('editconf -f %s -o conf.pdb' % gro_fn)
         canonicalize_pdb('conf.pdb')
-        call('viparr conf.pdb conf.dms -f charmm22star_aminoacids --without-constraints')
+        call('viparr conf.pdb conf.dms -f charmm22star_aminoacids -f tip3p_charmm --without-constraints')
 
         with open('desmond.cfg', 'w') as f:
             f.write(DESMONDCFG)
@@ -60,9 +60,20 @@ def main():
 
 
 def canonicalize_pdb(pdb_fn):
-    pdb = app.PDBFile(pdb_fn)
+    lines = []
+    with open(pdb_fn) as f:
+        for line in f:
+            if line.startswith('ATOM'):
+                element = line[13]
+                line = line.strip() + '           %s  \n' % element
+                lines.append(line)
+            else:
+                lines.append(line)
+
+    #pdb = app.PDBFile(pdb_fn)
     with open(pdb_fn, 'w') as f:
-        app.PDBFile.writeFile(pdb.topology, pdb.positions, f)
+        f.write(''.join(lines))
+
 
 DESMONDCFG = """
 app = mdsim
@@ -149,6 +160,4 @@ mdsim {
 
 if __name__ == '__main__':
     main()
-# set the box size to 50 nm
-#dms-set conf.dms  conf.dms box.d=50
-#desmond --include data/desmondsim.cfg --cfg boot.file=conf.dms
+
