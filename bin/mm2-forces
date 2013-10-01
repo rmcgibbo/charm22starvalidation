@@ -24,7 +24,7 @@ def main():
     with temporary_directory():
         call('editconf -f %s -o conf.pdb' % gro_fn)
         canonicalize_pdb('conf.pdb')
-        call('viparr conf.pdb conf.dms -f charmm22star_aminoacids --without-constraints')
+        call('viparr conf.pdb conf.dms -f charmm22star_aminoacids -f tip3p_charmm --without-constraints')
         dms = DesmondDMSFile('conf.dms')
 
     system = dms.createSystem(nonbondedMethod=app.PME,

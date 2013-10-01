@@ -15,7 +15,7 @@ _, gro_fn, top_fn, force_fn = sys.argv
 gro = app.GromacsGroFile(gro_fn)
 
 top = app.GromacsTopFile(top_fn, unitCellDimensions=gro.getUnitCellDimensions(),
-                         defines={'FLEXIBLE': True},
+                         defines={'FLEXIBLE': True, 'CHARMM_TIP3P': True},
                          includeDir=os.path.join(os.environ['GMXDATA'], 'top'))
 
 system = top.createSystem(nonbondedMethod=app.PME,

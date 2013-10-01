@@ -1,4 +1,4 @@
-all: mm-gmx.png mm-des.png des-gmx.png mm2-des.pdb mm-gmx.pdb mm-des.pdb des-gmx.pdb
+all: mm-gmx.png mm-des.png des-gmx.png mm2-des.pdb mm-gmx.pdb mm-des.pdb des-gmx.pdb mm2-mm.png mm2-mm.pdb
 
 clean:
 	rm -rf *.gro *.top \#topol.top* *.itp *.dms dessert_* eneseq forces.dtr trajectory.dtr *.png topology-match.pdb
@@ -7,7 +7,7 @@ clean:
 # Everything starts from the gro file, which we take as
 # the "reference geometry" of the system
 
-conf.gro topol.top: 1huf_MON.pdb #1LYD.pdb
+conf.gro topol.top: 1huf_dry.pdb
 	echo "1\n1\n" | pdb2gmx -f $< -ff charmm22star -water tip3p -ter -ignh
 	rm posre.itp
 
@@ -48,3 +48,5 @@ des-gmx.png: desforces.dat gmxforces.dat
 	bin/plot-max-deltaf desforces.dat gmxforces.dat des-gmx.png
 mm2-des.png: mm2forces.dat desforces.dat
 	bin/plot-max-deltaf desforces.dat mm2forces.dat mm2-des.png
+mm2-mm.png: mm2forces.dat mmforces.dat
+	bin/plot-max-deltaf mm2forces.dat mmforces.dat mm2-mm.png
